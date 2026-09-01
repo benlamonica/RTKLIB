@@ -573,6 +573,7 @@ static int ephpos(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     return 1;
 }
 /* satellite position and clock with sbas correction -------------------------*/
+#ifndef RTKLIB_NO_SBAS
 static int satpos_sbas(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
                         double *rs, double *dts, double *var, int *svh)
 {
@@ -601,6 +602,8 @@ static int satpos_sbas(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     return 0;
 }
 /* satellite position and clock with ssr correction --------------------------*/
+#endif /* !RTKLIB_NO_SBAS */
+#ifndef RTKLIB_NO_SSR
 static int satpos_ssr(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
                       int opt, double *rs, double *dts, double *var, int *svh)
 {
@@ -698,6 +701,7 @@ static int satpos_ssr(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     
     return 1;
 }
+#endif /* !RTKLIB_NO_SSR */
 /* satellite position and clock ------------------------------------------------
 * compute satellite position, velocity and clock
 * args   : gtime_t time     I   time (gpst)
@@ -724,11 +728,17 @@ extern int satpos(gtime_t time, gtime_t teph, int sat, int ephopt,
     
     switch (ephopt) {
         case EPHOPT_BRDC  : return ephpos     (time,teph,sat,nav,-1,rs,dts,var,svh);
+#ifndef RTKLIB_NO_SBAS
         case EPHOPT_SBAS  : return satpos_sbas(time,teph,sat,nav,   rs,dts,var,svh);
+#endif
+#ifndef RTKLIB_NO_SSR
         case EPHOPT_SSRAPC: return satpos_ssr (time,teph,sat,nav, 0,rs,dts,var,svh);
         case EPHOPT_SSRCOM: return satpos_ssr (time,teph,sat,nav, 1,rs,dts,var,svh);
+#endif
+#ifndef RTKLIB_EMBEDDED
         case EPHOPT_PREC  :
             if (!peph2pos(time,sat,nav,1,rs,dts,var)) break; else return 1;
+#endif
     }
     *svh=-1;
     return 0;

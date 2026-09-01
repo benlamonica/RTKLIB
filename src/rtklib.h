@@ -38,12 +38,16 @@
 #include <time.h>
 #include <ctype.h>
 #include <stdint.h>
+#ifdef RTKLIB_EMBEDDED
+#include "rtkpico_config.h"     /* embedded port trimming (see pico/config) */
+#else
 #ifdef WIN32
 #include <winsock2.h>
 #include <windows.h>
 #else
 #include <pthread.h>
 #include <sys/select.h>
+#endif
 #endif
 #ifdef __cplusplus
 extern "C" {
@@ -214,8 +218,12 @@ extern "C" {
 #endif
 #define NSYS        (NSYSGPS+NSYSGLO+NSYSGAL+NSYSQZS+NSYSCMP+NSYSIRN+NSYSLEO) /* number of systems */
 
+#ifndef MINPRNSBS
 #define MINPRNSBS   120                 /* min satellite PRN number of SBAS */
+#endif
+#ifndef MAXPRNSBS
 #define MAXPRNSBS   158                 /* max satellite PRN number of SBAS */
+#endif
 #define NSATSBS     (MAXPRNSBS-MINPRNSBS+1) /* number of SBAS satellites */
 
 #define MAXSAT      (NSATGPS+NSATGLO+NSATGAL+NSATQZS+NSATCMP+NSATIRN+NSATSBS+NSATLEO)
@@ -258,8 +266,15 @@ extern "C" {
 #define MAXSTRRTK   8                   /* max number of stream in RTK server */
 #define MAXSBSMSG   32                  /* max number of SBAS msg in RTK server */
 #define MAXSOLMSG   8191                /* max length of solution message */
+#ifndef MAXRAWLEN
 #define MAXRAWLEN   16384               /* max length of receiver raw message */
+#endif
+#ifndef MAXSUBFRMLEN
+#define MAXSUBFRMLEN 380                /* size of per-satellite subframe buffer */
+#endif
+#ifndef MAXERRMSG
 #define MAXERRMSG   4096                /* max length of error/warning message */
+#endif
 #define MAXANT      64                  /* max length of station name/antenna type */
 #define MAXSOLBUF   256                 /* max number of solution buffer */
 #define MAXOBSBUF   128                 /* max number of observation data buffer */
@@ -517,6 +532,13 @@ extern "C" {
 #define lock(f)     EnterCriticalSection(f)
 #define unlock(f)   LeaveCriticalSection(f)
 #define FILEPATHSEP '\\'
+#elif defined(RTKLIB_EMBEDDED)
+#define thread_t    int         /* stream/server structs are declared but */
+#define lock_t      int         /* never instantiated in the embedded port */
+#define initlock(f) ((void)(f))
+#define lock(f)     ((void)(f))
+#define unlock(f)   ((void)(f))
+#define FILEPATHSEP '/'
 #else
 #define thread_t    pthread_t
 #define lock_t      pthread_mutex_t
@@ -816,11 +838,19 @@ typedef struct {        /* navigation data type */
     int glo_fcn[32];    /* GLONASS FCN + 8 */
     double cbias[MAXSAT][3]; /* satellite DCB (0:P1-P2,1:P1-C1,2:P2-C2) (m) */
     double rbias[MAXRCV][2][3]; /* receiver DCB (0:P1-P2,1:P1-C1,2:P2-C2) (m) */
+#ifndef RTKLIB_NO_PCV
     pcv_t pcvs[MAXSAT]; /* satellite antenna pcv */
+#endif
+#ifndef RTKLIB_NO_SBAS
     sbssat_t sbssat;    /* SBAS satellite corrections */
     sbsion_t sbsion[MAXBAND+1]; /* SBAS ionosphere corrections */
+#endif
+#ifndef RTKLIB_NO_DGPS
     dgps_t dgps[MAXSAT]; /* DGPS corrections */
+#endif
+#ifndef RTKLIB_NO_SSR
     ssr_t ssr[MAXSAT];  /* SSR corrections */
+#endif
 } nav_t;
 
 typedef struct {        /* station parameter type */
@@ -900,7 +930,9 @@ typedef struct {        /* RTCM control struct type */
     nav_t nav;          /* satellite ephemerides */
     sta_t sta;          /* station parameters */
     dgps_t *dgps;       /* output of dgps corrections */
+#ifndef RTKLIB_NO_RTCM_SSR
     ssr_t ssr[MAXSAT];  /* output of ssr corrections */
+#endif
     char msg[128];      /* special message */
     char msgtype[256];  /* last message type */
     char msmtype[7][128]; /* msm signal types */
@@ -1133,7 +1165,9 @@ typedef struct {        /* RTK control/result type */
     double *x, *P;      /* float states and their covariance */
     double *xa,*Pa;     /* fixed states and their covariance */
     int nfix;           /* number of continuous fixes of ambiguity */
+#ifndef RTKLIB_NO_PPP
     ambc_t ambc[MAXSAT]; /* ambibuity control */
+#endif
     ssat_t ssat[MAXSAT]; /* satellite status */
     int neb;            /* bytes in error message buffer */
     char errbuf[MAXERRMSG]; /* error message buffer */
@@ -1151,10 +1185,12 @@ typedef struct {        /* receiver raw data control type */
     int ephset;         /* update set of ephemeris (0-1) */
     sbsmsg_t sbsmsg;    /* SBAS message */
     char msgtype[256];  /* last message type */
-    uint8_t subfrm[MAXSAT][380]; /* subframe buffer */
+    uint8_t subfrm[MAXSAT][MAXSUBFRMLEN]; /* subframe buffer */
     double lockt[MAXSAT][NFREQ+NEXOBS]; /* lock time (s) */
+#ifndef RTKLIB_EMBEDDED
     double icpp[MAXSAT],off[MAXSAT],icpc; /* carrier params for ss2 */
     double prCA[MAXSAT],dpCA[MAXSAT]; /* L1/CA pseudrange/doppler for javad */
+#endif
     uint8_t halfc[MAXSAT][NFREQ+NEXOBS]; /* half-cycle add flag */
     char freqn[MAXOBS]; /* frequency number for javad */
     int nbyte;          /* number of bytes in message buffer */ 

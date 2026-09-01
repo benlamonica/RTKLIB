@@ -1658,7 +1658,9 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
 extern void rtkinit(rtk_t *rtk, const prcopt_t *opt)
 {
     sol_t sol0={{0}};
+#ifndef RTKLIB_NO_PPP
     ambc_t ambc0={{{0}}};
+#endif
     ssat_t ssat0={0};
     int i;
     
@@ -1675,7 +1677,9 @@ extern void rtkinit(rtk_t *rtk, const prcopt_t *opt)
     rtk->Pa=zeros(rtk->na,rtk->na);
     rtk->nfix=rtk->neb=0;
     for (i=0;i<MAXSAT;i++) {
+#ifndef RTKLIB_NO_PPP
         rtk->ambc[i]=ambc0;
+#endif
         rtk->ssat[i]=ssat0;
     }
     for (i=0;i<MAXERRMSG;i++) rtk->errbuf[i]=0;

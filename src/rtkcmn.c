@@ -147,12 +147,20 @@
 #include <stdarg.h>
 #include <ctype.h>
 #include <errno.h>
-#ifndef WIN32
+#if !defined(WIN32) && !defined(RTKLIB_EMBEDDED)
 #include <dirent.h>
 #include <time.h>
 #include <sys/time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#endif
+#ifdef RTKLIB_EMBEDDED
+#include <time.h>
+#include <stdint.h>
+/* clock/tick/sleep hooks supplied by the port (pico/port/rtk_platform.c) */
+extern void     rtkpico_utc_now(double *ep);
+extern uint32_t rtkpico_tick_ms(void);
+extern void     rtkpico_sleep_ms(int ms);
 #endif
 #include "rtklib.h"
 
@@ -1583,6 +1591,11 @@ static double timeoffset_=0.0;        /* time offset (s) */
 
 extern gtime_t timeget(void)
 {
+#ifdef RTKLIB_EMBEDDED
+    double ep[6]={0};
+    rtkpico_utc_now(ep);
+    return timeadd(epoch2time(ep),timeoffset_);
+#else
     gtime_t time;
     double ep[6]={0};
 #ifdef WIN32
@@ -1606,6 +1619,7 @@ extern gtime_t timeget(void)
     time=gpst2utc(time);
 #endif
     return timeadd(time,timeoffset_);
+#endif
 }
 /* set current time in utc -----------------------------------------------------
 * set current time in utc
@@ -1847,7 +1861,9 @@ extern int adjgpsweek(int week)
 *-----------------------------------------------------------------------------*/
 extern uint32_t tickget(void)
 {
-#ifdef WIN32
+#if defined(RTKLIB_EMBEDDED)
+    return rtkpico_tick_ms();
+#elif defined(WIN32)
     return (uint32_t)timeGetTime();
 #else
     struct timespec tp={0};
@@ -1875,7 +1891,9 @@ extern uint32_t tickget(void)
 *-----------------------------------------------------------------------------*/
 extern void sleepms(int ms)
 {
-#ifdef WIN32
+#if defined(RTKLIB_EMBEDDED)
+    rtkpico_sleep_ms(ms);
+#elif defined(WIN32)
     if (ms<5) Sleep(1); else Sleep(ms);
 #else
     struct timespec ts;
@@ -3268,6 +3286,7 @@ extern int execcmd(const char *cmd)
 * return : number of expanded file paths
 * notes  : the order of expanded files is alphabetical order
 *-----------------------------------------------------------------------------*/
+#ifndef RTKLIB_EMBEDDED   /* expath()/mkdir_r()/createdir() need <dirent.h> and mkdir() */
 extern int expath(const char *path, char *paths[], int nmax)
 {
     int i,j,n=0;
@@ -3391,6 +3410,7 @@ extern void createdir(const char *path)
     
     mkdir_r(buff);
 }
+#endif /* !RTKLIB_EMBEDDED */
 /* replace string ------------------------------------------------------------*/
 static int repstr(char *str, const char *pat, const char *rep)
 {

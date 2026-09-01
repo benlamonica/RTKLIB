@@ -1311,16 +1311,20 @@ extern int init_raw(raw_t *raw, int format)
     raw->sbsmsg=sbsmsg0;
     raw->msgtype[0]='\0';
     for (i=0;i<MAXSAT;i++) {
-        for (j=0;j<380;j++) raw->subfrm[i][j]=0;
+        for (j=0;j<MAXSUBFRMLEN;j++) raw->subfrm[i][j]=0;
         for (j=0;j<NFREQ+NEXOBS;j++) {
             raw->tobs [i][j]=time0;
             raw->lockt[i][j]=0.0;
             raw->halfc[i][j]=0;
         }
+#ifndef RTKLIB_EMBEDDED
         raw->icpp[i]=raw->off[i]=raw->prCA[i]=raw->dpCA[i]=0.0;
+#endif
     }
     for (i=0;i<MAXOBS;i++) raw->freqn[i]=0;
+#ifndef RTKLIB_EMBEDDED
     raw->icpc=0.0;
+#endif
     raw->nbyte=raw->len=0;
     raw->iod=raw->flag=raw->tbase=raw->outtype=0;
     raw->tod=-1;
@@ -1340,8 +1344,8 @@ extern int init_raw(raw_t *raw, int format)
         !(raw->obuf.data=(obsd_t *)malloc(sizeof(obsd_t)*MAXOBS))||
         !(raw->nav.eph  =(eph_t  *)malloc(sizeof(eph_t )*MAXSAT*2))||
         !(raw->nav.alm  =(alm_t  *)malloc(sizeof(alm_t )*MAXSAT))||
-        !(raw->nav.geph =(geph_t *)malloc(sizeof(geph_t)*NSATGLO))||
-        !(raw->nav.seph =(seph_t *)malloc(sizeof(seph_t)*NSATSBS*2))) {
+        !(raw->nav.geph =(geph_t *)malloc(sizeof(geph_t)*(NSATGLO  ?NSATGLO  :1)))||
+        !(raw->nav.seph =(seph_t *)malloc(sizeof(seph_t)*(NSATSBS*2?NSATSBS*2:1)))) {
         free_raw(raw);
         return 0;
     }
