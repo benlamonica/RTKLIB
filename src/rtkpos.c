@@ -70,6 +70,33 @@
 
 #define VAR_HOLDAMB 0.001    /* constraint to hold ambiguity (cycle^2) */
 
+#ifndef EFACT_GLO_CODE
+#define EFACT_GLO_CODE 1.0   /* extra error factor: GLONASS pseudorange, for
+                                inter-frequency code biases (1: stock weight) */
+#endif
+
+/* Stock valpos() reports large post-fit residuals but never fails a solution,
+ * so a fix whose carrier-phase residuals are many sigma off -- the signature of
+ * wrong integers -- is still output as FIX. When positive, a fixed solution is
+ * rejected (left FLOAT, not held) if any phase double-difference residual
+ * between two fixed ambiguities exceeds this many sigma. 0 keeps the stock behaviour. A variable, not just
+ * a define, so the host replay can sweep it. */
+#ifndef VALPOS_FIX_REJECT
+#define VALPOS_FIX_REJECT 0.0
+#endif
+double rtkpos_fix_reject=VALPOS_FIX_REJECT;
+uint32_t rtkpos_fix_rejected;
+/* Squared distance of the float ambiguities from the best integer set, in
+ * their own covariance (LAMBDA s[0]) per ambiguity, for the latest attempt.
+ * The ratio test only compares the best set with the runner-up, so a float
+ * solution that is far from every integer set can still pass it. */
+double rtkpos_last_s0nb;
+#ifndef LAMBDA_MAX_S0NB
+#define LAMBDA_MAX_S0NB 0.0         /* >0: fail validation above this; 0 = stock */
+#endif
+double rtkpos_max_s0nb=LAMBDA_MAX_S0NB;
+uint32_t rtkpos_s0_rejected;
+
 #define TTOL_MOVEB  (1.0+2*DTTOL)
                              /* time sync tolerance for moving-baseline (s) */
 
@@ -393,6 +420,7 @@ static double varerr(int sat, int sys, double el, double bl, double dt, int f,
     if (f>=nf) fact=opt->eratio[f-nf];
     if (fact<=0.0) fact=opt->eratio[0];
     fact*=sys==SYS_GLO?EFACT_GLO:(sys==SYS_SBS?EFACT_SBS:EFACT_GPS);
+    if (f>=nf&&sys==SYS_GLO) fact*=EFACT_GLO_CODE;
     a=fact*opt->err[1];
     b=fact*opt->err[2];
     
@@ -639,8 +667,12 @@ static void detslp_ll(rtk_t *rtk, const obsd_t *obs, int i, int rcv)
         if (rcv==1) setbitu(&rtk->ssat[sat-1].slip[f],0,2,obs[i].LLI[f]);
         else        setbitu(&rtk->ssat[sat-1].slip[f],2,2,obs[i].LLI[f]);
         
-        /* save slip and half-cycle valid flag */
-        rtk->ssat[sat-1].slip[f]|=(uint8_t)slip;
+        /* save slip and half-cycle valid flag. Only bits 0-1 are flags; bits
+         * 4-7 hold the LLI saved above, so an unmasked u-blox LLI_HALFS (0x80)
+         * lands on the rover's saved HALFC bit and reads back next epoch as a
+         * half-cycle transition -- a spurious slip, and an ambiguity reset,
+         * every epoch on every half-cycle-subtracted satellite. */
+        rtk->ssat[sat-1].slip[f]|=(uint8_t)(slip&(LLI_SLIP|LLI_HALFC));
         rtk->ssat[sat-1].half[f]=(obs[i].LLI[f]&2)?0:1;
     }
 }
@@ -1306,12 +1338,21 @@ static void restamb(rtk_t *rtk, const double *bias, int nb, double *xa)
 static void holdamb(rtk_t *rtk, const double *xa)
 {
     double *v,*H,*R;
-    int i,n,m,f,info,index[MAXSAT],nb=rtk->nx-rtk->na,nv=0,nf=NF(&rtk->opt);
-    
+    int i,n,m,f,info,index[MAXSAT],nb=0,nv=0,nf=NF(&rtk->opt);
+
     trace(3,"holdamb :\n");
-    
-    v=mat(nb,1); H=zeros(nb,rtk->nx);
-    
+
+    /* Each constraint is one fixed satellite against its system's reference,
+     * so there are fewer than the number of fixed ambiguities. Sizing H by
+     * that rather than by every ambiguity state (nx-na) matters on small
+     * targets: with nx=62 the full-size H was 29 KB, allocated on top of
+     * relpos()'s own matrices at the peak of every held epoch. */
+    for (i=0;i<MAXSAT;i++) for (f=0;f<nf;f++) {
+        if (rtk->ssat[i].fix[f]==2) nb++;
+    }
+    if (nb<=0) return;
+    v=mat(nb,1); H=zeros(rtk->nx,nb);
+
     for (m=0;m<5;m++) for (f=0;f<nf;f++) {
         
         for (n=i=0;i<MAXSAT;i++) {
@@ -1390,8 +1431,17 @@ static int resamb_LAMBDA(rtk_t *rtk, double *bias, double *xa)
         rtk->sol.ratio=s[0]>0?(float)(s[1]/s[0]):0.0f;
         if (rtk->sol.ratio>999.9) rtk->sol.ratio=999.9f;
         
+        rtkpos_last_s0nb=s[0]/nb;
+        
         /* validation by popular ratio-test */
-        if (s[0]<=0.0||s[1]/s[0]>=opt->thresar[0]) {
+        if ((s[0]<=0.0||s[1]/s[0]>=opt->thresar[0])&&rtkpos_max_s0nb>0.0&&
+            s[0]/nb>rtkpos_max_s0nb) {
+            rtkpos_s0_rejected++;
+            errmsg(rtk,"ambiguity validation failed: s0/nb=%.2f > %.2f (nb=%d)\n",
+                   s[0]/nb,rtkpos_max_s0nb,nb);
+            nb=0;
+        }
+        else if (s[0]<=0.0||s[1]/s[0]>=opt->thresar[0]) {
             
             /* transform float to fixed solution (xa=xa-Qab*Qb\(b0-b)) */
             for (i=0;i<na;i++) {
@@ -1435,9 +1485,9 @@ static int resamb_LAMBDA(rtk_t *rtk, double *bias, double *xa)
 }
 /* validation of solution ----------------------------------------------------*/
 static int valpos(rtk_t *rtk, const double *v, const double *R, const int *vflg,
-                  int nv, double thres)
+                  int nv, double thres, double rejthres)
 {
-    double fact=thres*thres;
+    double fact=thres*thres,rej=rejthres*rejthres;
     int i,stat=1,sat1,sat2,type,freq;
     char *stype;
     
@@ -1445,6 +1495,16 @@ static int valpos(rtk_t *rtk, const double *v, const double *R, const int *vflg,
     
     /* post-fit residual test */
     for (i=0;i<nv;i++) {
+        type=(vflg[i]>> 4)&0xF;
+        sat1=(vflg[i]>>16)&0xFF;
+        sat2=(vflg[i]>> 8)&0xFF;
+        freq=vflg[i]&0xF;
+        /* only pairs whose ambiguities were both fixed: a float ambiguity
+         * (GLONASS with glomodear=0, a newly risen satellite) leaves a phase
+         * residual of its own uncertainty however right the fix is */
+        if (rejthres>0.0&&type==0&&sat1>0&&sat2>0&&
+            rtk->ssat[sat1-1].fix[freq]>=2&&rtk->ssat[sat2-1].fix[freq]>=2&&
+            v[i]*v[i]>rej*R[i+i*nv]) stat=0;
         if (v[i]*v[i]<=fact*R[i+i*nv]) continue;
         sat1=(vflg[i]>>16)&0xFF;
         sat2=(vflg[i]>> 8)&0xFF;
@@ -1453,6 +1513,10 @@ static int valpos(rtk_t *rtk, const double *v, const double *R, const int *vflg,
         stype=type==0?"L":(type==1?"L":"C");
         errmsg(rtk,"large residual (sat=%2d-%2d %s%d v=%6.3f sig=%.3f)\n",
               sat1,sat2,stype,freq+1,v[i],SQRT(R[i+i*nv]));
+    }
+    if (!stat) {
+        rtkpos_fix_rejected++;
+        errmsg(rtk,"fix rejected: phase residual over %.1f sigma\n",rejthres);
     }
     return stat;
 }
@@ -1548,7 +1612,7 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
         nv=ddres(rtk,nav,dt,xp,Pp,sat,y,e,azel,freq,iu,ir,ns,v,NULL,R,vflg);
         
         /* validation of float solution */
-        if (valpos(rtk,v,R,vflg,nv,4.0)) {
+        if (valpos(rtk,v,R,vflg,nv,4.0,0.0)) {
             
             /* update state and covariance matrix */
             matcpy(rtk->x,xp,rtk->nx,1);
@@ -1577,7 +1641,7 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
                      vflg);
             
             /* validation of fixed solution */
-            if (valpos(rtk,v,R,vflg,nv,4.0)) {
+            if (valpos(rtk,v,R,vflg,nv,4.0,rtkpos_fix_reject)) {
                 
                 /* hold integer ambiguity */
                 if (++rtk->nfix>=rtk->opt.minfix&&
